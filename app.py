@@ -12,16 +12,18 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 # Vision One AI Guard config
 V1_API_KEY = os.getenv("V1_API_KEY", "")
-V1_GUARD_ENABLED = os.getenv("V1_GUARD_ENABLED", "false").lower() == "true"
+if not V1_API_KEY:
+    raise RuntimeError("Missing V1_API_KEY environment variable")
+
+V1_GUARD_ENABLED = os.getenv("V1_GUARD_ENABLED", "true").lower() == "true"
 V1_GUARD_DETAILED = os.getenv("V1_GUARD_DETAILED", "true").lower() == "true"
 V1_GUARD_URL_BASE = os.getenv("V1_GUARD_URL_BASE", "https://api.xdr.trendmicro.com/beta/aiSecurity/guard")
 
-# Enforce on both sides; any violation => block
+# Enforce on which side
 ENFORCE_SIDE = os.getenv("ENFORCE_SIDE", "both")  # user | assistant | both
 
-# Optional tuning knobs (kept for future use; not required by current normalize logic)
-V1_GUARD_CONFIDENCE_MIN = float(os.getenv("V1_GUARD_CONFIDENCE_MIN", "0.0"))
-V1_GUARD_PROMPT_ATTACK_APPLIES = os.getenv("V1_GUARD_PROMPT_ATTACK_APPLIES", "both")
+# Only for reporting in /healthz
+EXTERNAL_PORT = os.getenv("EXT_PORT", "8080")
 
 app = FastAPI(title=APP_TITLE)
 
@@ -166,60 +168,42 @@ input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage();
 </html>
 """
 
-# ------------------ AI Guard helpers ------------------
+# ---------- Vision One AI Guard integration (source of truth) ----------
 
-def _any_violation(items) -> bool:
-    if not isinstance(items, list):
-        return False
-    for it in items:
-        if isinstance(it, dict) and any(it.get(k) is True for k in ("content_violation","violation","leakage")):
-            return True
-    return False
-
-def _block_on_any_violation(guard_json: dict) -> bool:
-    if not isinstance(guard_json, dict):
-        return False
-    reason = str(guard_json.get("reason", "")).lower()
-
-    if _any_violation(guard_json.get("harmful_content")):
-        return True
-    if _any_violation(guard_json.get("prompt_attack")) or _any_violation(guard_json.get("prompt_attacks")):
-        return True
-    if (_any_violation(guard_json.get("sensitive_info"))
-        or _any_violation(guard_json.get("sensitive_content"))
-        or _any_violation(guard_json.get("sensitive_information"))
-        or _any_violation(guard_json.get("pii"))):
-        return True
-
-    if ("harmful content detected" in reason
-        or "sensitive information detected" in reason
-        or "prompt attack detected" in reason):
-        return True
-    return False
-
-def _normalize_decision(guard_json: dict) -> str:
-    if not isinstance(guard_json, dict):
-        return "allow"
-    if _block_on_any_violation(guard_json):
-        return "block"
-    action = str(guard_json.get("action", "")).lower()
-    if action in {"review", "flag", "warn"}:
-        return "review"
-    return "allow"
-
-def _v1_guard_scan(text: str) -> Optional[Dict[str, Any]]:
-    if not V1_GUARD_ENABLED or not V1_API_KEY or not text:
+def _guard_decision(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Calls Trend Vision One AI Guard and returns a normalized envelope:
+    { status: 'ok'|'error', decision: 'allow'|'block'|'review', raw: <full response> }
+    """
+    if not V1_GUARD_ENABLED or not text:
         return None
+
     try:
         headers = {"Authorization": f"Bearer {V1_API_KEY}", "Content-Type": "application/json"}
-        params = {"detailedResponse": str(V1_GUARD_DETAILED).lower()}
+        params = {"detailedResponse": str(V1_GUARD_DETAILED).lower()}  # 'true' or 'false'
         payload = {"guard": text}
+
         r = requests.post(V1_GUARD_URL_BASE, headers=headers, params=params, json=payload, timeout=30)
-        if r.status_code == 200:
-            data = r.json()
-            decision = _normalize_decision(data)
-            return {"status": "ok", "decision": decision, **data}
-        return {"status": "error", "decision": "review", "http_status": r.status_code, "text": r.text}
+        if r.status_code != 200:
+            return {"status": "error", "decision": "review", "http_status": r.status_code, "text": r.text}
+
+        data = r.json()
+
+        # Trust Trend's recommendation/decision fields if present.
+        # Common possibilities: 'decision', 'action', or 'recommendation'.
+        decision = str(
+            data.get("decision")
+            or data.get("action")
+            or data.get("recommendation")
+            or "allow"
+        ).lower()
+
+        if decision not in {"allow", "block", "review"}:
+            # Fallback to conservative 'review' if field is unexpected
+            decision = "review"
+
+        return {"status": "ok", "decision": decision, **data}
+
     except requests.RequestException as e:
         return {"status": "error", "decision": "review", "error": str(e)}
 
@@ -234,7 +218,14 @@ def _should_block(decision: str, side: str) -> bool:
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "model": OLLAMA_MODEL, "v1_guard_enabled": V1_GUARD_ENABLED}
+    return {
+        "status": "ok",
+        "model": OLLAMA_MODEL,
+        "ollama_base_url": OLLAMA_BASE_URL,
+        "v1_guard_enabled": V1_GUARD_ENABLED,
+        "v1_guard_detailed": V1_GUARD_DETAILED,
+        "external_port": EXTERNAL_PORT
+    }
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -246,13 +237,14 @@ def chat(payload: Dict[str, Any]):
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="Invalid messages")
 
+    # 1) Scan the latest user message
     last_user_msg = ""
     for m in reversed(messages):
         if m.get("role") == "user":
             last_user_msg = m.get("content", "")
             break
 
-    guard_user = _v1_guard_scan(last_user_msg) if last_user_msg else None
+    guard_user = _guard_decision(last_user_msg) if last_user_msg else None
     if guard_user and _should_block(guard_user.get("decision", "allow"), "user"):
         return JSONResponse({
             "reply": "[Blocked by AI Guard]",
@@ -260,6 +252,7 @@ def chat(payload: Dict[str, Any]):
             "blocked": "user"
         })
 
+    # 2) If allowed, call Ollama
     try:
         r = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
@@ -274,7 +267,8 @@ def chat(payload: Dict[str, Any]):
     data = r.json()
     assistant_text = data.get("message", {}).get("content", "")
 
-    guard_asst = _v1_guard_scan(assistant_text) if assistant_text else None
+    # 3) Scan the assistant's reply
+    guard_asst = _guard_decision(assistant_text) if assistant_text else None
     if guard_asst and _should_block(guard_asst.get("decision", "allow"), "assistant"):
         return JSONResponse({
             "reply": "[Blocked by AI Guard]",
