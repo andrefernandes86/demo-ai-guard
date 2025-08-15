@@ -1,7 +1,5 @@
 # AI Guard Chat
 
-<img width="902" height="692" alt="image" src="https://github.com/user-attachments/assets/524d3ee9-2afa-4be2-a85c-879ad0e66ac3" />
-
 
 AI Guard Chat is a minimal FastAPI application that integrates with:
 - **Ollama** for local or remote LLM inference
