@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  ai-guard-chat:
+    build: .
+    container_name: ai-guard-chat
+    ports:
+      - "8080:8080"
+    environment:
+      # Ollama
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://192.168.1.100:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3.1:8b}"
+
+      # Trend Vision One AI Guard
+      V1_GUARD_ENABLED: "${V1_GUARD_ENABLED:-true}"
+      V1_GUARD_DETAILED: "${V1_GUARD_DETAILED:-true}"
+      V1_API_KEY: "${V1_API_KEY}"
+      V1_GUARD_URL_BASE: "${V1_GUARD_URL_BASE:-https://api.xdr.trendmicro.com/beta/aiSecurity/guard}"
+
+      # Enforcement
+      ENFORCE_SIDE: "${ENFORCE_SIDE:-both}"
+
+      # Optional knobs (kept for future logic)
+      V1_GUARD_CONFIDENCE_MIN: "${V1_GUARD_CONFIDENCE_MIN:-0.95}"
+      V1_GUARD_PROMPT_ATTACK_APPLIES: "${V1_GUARD_PROMPT_ATTACK_APPLIES:-both}"
+    restart: always
