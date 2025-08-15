@@ -7,6 +7,8 @@ AI Guard Chat is a minimal FastAPI application that integrates with:
 
 The app lets you chat with an LLM while automatically scanning both your **prompts** and the **model's responses** using Trend Vision One's AI Guard API.
 
+![AI Guard](https://github.com/andreferrerfnades86/demo-ai-guard/blob/main/ai0guard.png)
+
 ## Features
 
 - 🚀 **Easy Deployment** – Single container with configurable `.env`
