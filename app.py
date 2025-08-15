@@ -180,7 +180,7 @@ def _guard_decision(text: str) -> Optional[Dict[str, Any]]:
 
     try:
         headers = {"Authorization": f"Bearer {V1_API_KEY}", "Content-Type": "application/json"}
-        params = {"detailedResponse": str(V1_GUARD_DETAILED).lower()}  # 'true' or 'false'
+        params = {"detailedResponse": str(V1_GUARD_DETAILED).lower()}
         payload = {"guard": text}
 
         r = requests.post(V1_GUARD_URL_BASE, headers=headers, params=params, json=payload, timeout=30)
@@ -189,17 +189,14 @@ def _guard_decision(text: str) -> Optional[Dict[str, Any]]:
 
         data = r.json()
 
-        # Trust Trend's recommendation/decision fields if present.
-        # Common possibilities: 'decision', 'action', or 'recommendation'.
+        # Trust Trend's decision fields if present
         decision = str(
             data.get("decision")
             or data.get("action")
             or data.get("recommendation")
             or "allow"
         ).lower()
-
         if decision not in {"allow", "block", "review"}:
-            # Fallback to conservative 'review' if field is unexpected
             decision = "review"
 
         return {"status": "ok", "decision": decision, **data}
