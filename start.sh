@@ -31,6 +31,10 @@ enforce_side=${enforce_side:-both}
 read -rp "Vision One AI Guard API base URL (default: https://api.xdr.trendmicro.com/beta/aiSecurity/guard): " v1_guard_url
 v1_guard_url=${v1_guard_url:-https://api.xdr.trendmicro.com/beta/aiSecurity/guard}
 
+# Prompt for external port
+read -rp "External port to publish AI Guard Chat (default: 8080): " ext_port
+ext_port=${ext_port:-8080}
+
 # Create .env file
 cat > .env <<EOF
 # Ollama
@@ -49,6 +53,9 @@ ENFORCE_SIDE=${enforce_side}
 # Optional knobs
 V1_GUARD_CONFIDENCE_MIN=0.95
 V1_GUARD_PROMPT_ATTACK_APPLIES=both
+
+# External port
+EXT_PORT=${ext_port}
 EOF
 
 echo
@@ -58,10 +65,18 @@ cat .env
 echo "--------------------------------"
 echo
 
+# Update docker-compose.yml port mapping dynamically
+if grep -q "EXT_PORT" docker-compose.yml; then
+    echo "docker-compose.yml already configured for EXT_PORT."
+else
+    echo "Updating docker-compose.yml to use EXT_PORT..."
+    sed -i.bak 's|"8080:8080"|"${EXT_PORT}:8080"|' docker-compose.yml
+fi
+
 # Start the container
 echo "Starting AI Guard Chat..."
 docker compose up -d --build
 
 echo
-echo "Done! Visit: http://localhost:8080"
-echo "Health check: curl http://localhost:8080/healthz"
+echo "Done! Visit: http://localhost:${ext_port}"
+echo "Health check: curl http://localhost:${ext_port}/healthz"
